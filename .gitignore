@@ -163,4 +163,4 @@ cython_debug/
 
 # Project
 tracker-airflow/logs
-tracker-airflow/data/*
+tracker-airflow/data/users.json
