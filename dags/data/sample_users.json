@@ -1,0 +1,12 @@
+[
+    {
+      "discord_user_id": -1,
+      "osu_user_id": -1,
+      "modes": [
+        "osu",
+        "taiko",
+        "fruits",
+        "mania"
+      ]
+    }
+]
