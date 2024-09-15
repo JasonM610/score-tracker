@@ -162,5 +162,5 @@ cython_debug/
 #.idea/
 
 # Project
-tracker-airflow/logs
-tracker-airflow/data/users.json
+logs/
+dags/data/*
