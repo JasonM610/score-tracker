@@ -49,9 +49,13 @@ def taskflow():
         @task()
         def get_users():
             endpoint = "rankings/osu/performance"
-            users = send_request(endpoint) | send_request(endpoint, {"page": 2})
+            users = []
 
-            return [user["user"]["id"] for user in users["ranking"]]
+            for page in range(1, 6):
+                users_dict = send_request(endpoint, params={"page": page})
+                users += [user["user"]["id"] for user in users_dict["ranking"]]
+
+            return users
     
         @task()
         def get_recent_scores(user_ids):
@@ -62,24 +66,26 @@ def taskflow():
                 user_scores = send_request(f"users/{user_id}/scores/best", params={"mode": "osu", "limit": 100})
 
                 for score in user_scores:
-                    score_date = datetime.strptime(score["created_at"], "%Y-%m-%dT%H:%M:%SZ").date()
-                    beatmap_title = score["beatmapset"]["title"][:38] + ("..." * (len(score["beatmapset"]["title"]) > 40))
-                    beatmap_version = score["beatmap"]["version"][:38] + ("..." * (len(score["beatmap"]["version"]) > 40))
-                    if score_date >= min_date:
-                        scores.append({
-                            "user_id": user_id,
-                            "username": score["user"]["username"],
-                            "beatmap_id": score["beatmap"]["id"],
-                            "accuracy": round(score["accuracy"], 4),
-                            "pp": score["pp"],
-                            "mods": ("").join(score["mods"]),
-                            "grade": score["rank"],
-                            "beatmap_url": score["beatmap"]["url"],
-                            "artist": score["beatmapset"]["artist"],
-                            "title": beatmap_title,
-                            "version": beatmap_version,
-                            "created_at": datetime.fromisoformat(score["created_at"].replace("Z", "+00:00")).timestamp(),
-                        })
+                    if datetime.strptime(score["created_at"], "%Y-%m-%dT%H:%M:%SZ").date() < min_date:
+                        continue
+
+                    beatmap_title = score["beatmapset"]["title"][:32] + ("..." * (len(score["beatmapset"]["title"]) > 35))
+                    beatmap_version = score["beatmap"]["version"][:32] + ("..." * (len(score["beatmap"]["version"]) > 35))
+
+                    scores.append({
+                        "user_id": user_id,
+                        "username": score["user"]["username"],
+                        "beatmap_id": score["beatmap"]["id"],
+                        "accuracy": round(score["accuracy"], 4),
+                        "pp": score["pp"],
+                        "mods": ("").join(score["mods"] or "NM"),
+                        "grade": score["rank"],
+                        "beatmap_url": score["beatmap"]["url"],
+                        "artist": score["beatmapset"]["artist"],
+                        "title": beatmap_title,
+                        "version": beatmap_version,
+                        "created_at": datetime.fromisoformat(score["created_at"].replace("Z", "+00:00")).timestamp(),
+                    })
 
             return pd.DataFrame(scores)
 
@@ -110,6 +116,8 @@ def taskflow():
                 },
             }
 
+            row_value = ""
+
             for i, row in scores.iterrows():
                 username = f"**{row["username"]}**"
                 beatmap = f"**[{row["title"]} [{row["version"]}]]({row["beatmap_url"]})**"
@@ -117,19 +125,18 @@ def taskflow():
                 pp = f"**{int(row["pp"])}pp**"
                 accuracy = f"{round(row["accuracy"] * 100, 2)}%"
                 grade = f"{row["grade"]}"
-                score_date = f"{int(row["created_at"])}"
 
-                row_value = f"**{i+1})** {username} — {pp}\n" + \
-                    f"{beatmap} +{mods}\n" + \
-                    f" • ({accuracy}) — {grade}\n" + \
-                    f" • <t:{score_date}:t>"
+                row_value += f"**{i+1})** {username} — {beatmap}\n" + \
+                    f" • {pp}, +{mods}\n" + \
+                    f" • {accuracy} {grade} — 100x/1000x\n"
+                
 
-                embed["fields"].append(
-                    {
-                        "name": "",
-                        "value": row_value,
-                    }
-                )
+            embed["fields"].append(
+                {
+                    "name": "",
+                    "value": row_value,
+                }
+            )
             
             payload = {
                 "embeds": [embed]
@@ -139,12 +146,13 @@ def taskflow():
 
         @task
         def send_message(payload):
-            webhook_url = WEBHOOK_URL
-            headers = {
-                'Content-Type': 'application/json'
-            }
-
-            response = requests.post(webhook_url, headers=headers, data=json.dumps(payload))
+            requests.post(
+                WEBHOOK_URL, 
+                headers={
+                    'Content-Type': 'application/json'
+                }, 
+                data=json.dumps(payload)
+            )
 
         payload = build_message()
         sent = send_message(payload)      
