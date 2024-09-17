@@ -19,10 +19,10 @@ CLIENT_SECRET = Variable.get("CLIENT_SECRET")
 WEBHOOK_URL = Variable.get("WEBHOOK_URL")
 
 default_args = {
-    "start_date": datetime(2024, 9, 16),
+    "start_date": datetime(2024, 9, 17),
     "catchup":False,
-    #"retries": 1,
-    #"retry_delay": timedelta(minutes=5),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
 def send_request(endpoint, params=None):
@@ -48,11 +48,10 @@ def taskflow():
 
         @task()
         def get_users():
-            endpoint = "rankings/osu/performance"
             users = []
 
             for page in range(1, 6):
-                users_dict = send_request(endpoint, params={"page": page})
+                users_dict = send_request("rankings/osu/performance", params={"page": page})
                 users += [user["user"]["id"] for user in users_dict["ranking"]]
 
             return users
@@ -60,31 +59,41 @@ def taskflow():
         @task()
         def get_recent_scores(user_ids):
             scores = []
-            min_date = (datetime.now(tz=timezone.utc) - timedelta(days=1)).date()
+            target_date = (datetime.now(tz=timezone.utc) - timedelta(days=1)).date()
 
             for user_id in user_ids:
                 user_scores = send_request(f"users/{user_id}/scores/best", params={"mode": "osu", "limit": 100})
-
+                position = 0
                 for score in user_scores:
-                    if datetime.strptime(score["created_at"], "%Y-%m-%dT%H:%M:%SZ").date() < min_date:
+                    position += 1
+                    if datetime.strptime(score["created_at"], "%Y-%m-%dT%H:%M:%SZ").date() != target_date:
                         continue
+                    
+                    beatmap = send_request(f"beatmaps/{score["beatmap"]["id"]}")
 
-                    beatmap_title = score["beatmapset"]["title"][:32] + ("..." * (len(score["beatmapset"]["title"]) > 35))
-                    beatmap_version = score["beatmap"]["version"][:32] + ("..." * (len(score["beatmap"]["version"]) > 35))
+                    beatmap_title = beatmap["beatmapset"]["title"]
+                    beatmap_version = beatmap["version"]
 
                     scores.append({
                         "user_id": user_id,
                         "username": score["user"]["username"],
-                        "beatmap_id": score["beatmap"]["id"],
-                        "accuracy": round(score["accuracy"], 4),
+                        "beatmap_id": beatmap["id"],
+                        "beatmapset_id": beatmap["beatmapset_id"],
+                        "position": position,
+                        "accuracy": score["accuracy"],
                         "pp": score["pp"],
-                        "mods": ("").join(score["mods"] or "NM"),
+                        "mods": (",").join(score["mods"] or ["NM"]),
                         "grade": score["rank"],
-                        "beatmap_url": score["beatmap"]["url"],
-                        "artist": score["beatmapset"]["artist"],
+                        "combo": score["max_combo"],
+                        "max_combo": beatmap["max_combo"],
+                        "count_300": score["statistics"]["count_300"],
+                        "count_100": score["statistics"]["count_100"],
+                        "count_50": score["statistics"]["count_50"],
+                        "count_miss": score["statistics"]["count_miss"],
+                        "beatmap_url": beatmap["url"],
                         "title": beatmap_title,
                         "version": beatmap_version,
-                        "created_at": datetime.fromisoformat(score["created_at"].replace("Z", "+00:00")).timestamp(),
+                        "created_at": int(datetime.fromisoformat(score["created_at"].replace("Z", "+00:00")).timestamp()),
                     })
 
             return pd.DataFrame(scores)
@@ -109,34 +118,40 @@ def taskflow():
 
             embed = {
                 "title": f"Top Plays — {((datetime.now(tz=timezone.utc)) - timedelta(days=1)).strftime("%m/%d/%Y")}",
-                "color": 0xb483f6,
+                "color": 0xb21869,
                 "fields": [],
                 "thumbnail": {
-                    "url": f"https://b.ppy.sh/{scores['beatmap_id'].iloc[0]}"
+                    "url": f"https://b.ppy.sh/thumb/{scores["beatmapset_id"].iloc[0]}l.jpg"
                 },
             }
 
-            row_value = ""
 
             for i, row in scores.iterrows():
                 username = f"**{row["username"]}**"
                 beatmap = f"**[{row["title"]} [{row["version"]}]]({row["beatmap_url"]})**"
-                mods = f"{row["mods"]}"
+                mods = f"+{row["mods"]}"
                 pp = f"**{int(row["pp"])}pp**"
-                accuracy = f"{round(row["accuracy"] * 100, 2)}%"
-                grade = f"{row["grade"]}"
+                position = f"{row["position"]}"
+                accuracy = f"({round(row["accuracy"] * 100, 2)}%)"
+                grade = f"**{row["grade"]}**"
+                combo = f"{row["combo"]}x/{row["max_combo"]}x"
+                stats = f"[{row["count_300"]}/{row["count_100"]}/{row["count_50"]}/{row["count_miss"]}]"
+                timestamp = f"{row["created_at"]}"
 
-                row_value += f"**{i+1})** {username} — {beatmap}\n" + \
-                    f" • {pp}, +{mods}\n" + \
-                    f" • {accuracy} {grade} — 100x/1000x\n"
+                row_value = (
+                    f"**#{i+1})** {username} — {beatmap} {mods}\n"
+                    f" » {pp} — Personal Best #{position}\n"
+                    f" » {grade} {accuracy} — {combo} — {stats}\n"
+                    f" » <t:{timestamp}:R>\n"
+                )
                 
 
-            embed["fields"].append(
-                {
-                    "name": "",
-                    "value": row_value,
-                }
-            )
+                embed["fields"].append(
+                    {
+                        "name": "",
+                        "value": row_value,
+                    }
+                )
             
             payload = {
                 "embeds": [embed]
@@ -146,13 +161,15 @@ def taskflow():
 
         @task
         def send_message(payload):
-            requests.post(
+            resp = requests.post(
                 WEBHOOK_URL, 
                 headers={
                     'Content-Type': 'application/json'
                 }, 
                 data=json.dumps(payload)
             )
+
+            resp.raise_for_status()
 
         payload = build_message()
         sent = send_message(payload)      
